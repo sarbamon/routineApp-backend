@@ -82,6 +82,30 @@ router.get("/profile/:userId", auth, async (req, res) => {
   }
 });
 
+// CLEAR conversation with a user (soft delete all messages)
+router.delete("/clear/:userId", auth, async (req, res) => {
+  try {
+    const me    = req.user.id;
+    const other = req.params.userId;
+
+    // Add current user to deletedBy for all messages in this conversation
+    await Message.updateMany(
+      {
+        $or: [
+          { from: me,    to: other },
+          { from: other, to: me    },
+        ],
+      },
+      { $addToSet: { deletedBy: me } }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Clear chat error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // UPDATE own profile picture + bio
 router.patch("/profile", auth, async (req, res) => {
   try {
