@@ -209,5 +209,40 @@ router.get("/friends", auth, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+// ── GET Friends Stats (Fixes 404 in SettingsPage) ───────────────────────────
+router.get("/stats", auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Requests sent BY the user (from: userId)
+    const sentCount = await FriendRequest.countDocuments({ 
+      from: userId, 
+      status: "pending" 
+    });
+
+    // 2. Friends successfully made (accepted)
+    const acceptedCount = await FriendRequest.countDocuments({
+      $or: [
+        { from: userId, status: "accepted" },
+        { to: userId, status: "accepted" },
+      ],
+    });
+
+    // 3. Blocked users
+    const blockedCount = await FriendRequest.countDocuments({
+      from: userId,
+      status: "blocked",
+    });
+
+    res.json({
+      friendRequestsSent: sentCount,
+      friendRequestsAccepted: acceptedCount,
+      blockedUsers: blockedCount,
+    });
+  } catch (err) {
+    console.error("Friends stats error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 module.exports = router;

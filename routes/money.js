@@ -8,7 +8,7 @@ const moneySchema = new mongoose.Schema({
   user:     { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   type:     { type: String, enum: ["income", "expense", "loan", "goal"], required: true },
   label:    { type: String },
-  amount:   { type: Number, required: true },
+  amount:   { type: Number, required: false },
   date:     { type: String },
   category: { type: String },
   person:   { type: String },
@@ -88,12 +88,19 @@ router.get("/summary/:year/:month", auth, async (req, res) => {
 // ── POST add item ─────────────────────────────────────────────────────────────
 router.post("/", auth, async (req, res) => {
   try {
-    const item = new Money({ ...req.body, user: req.user.id });
+
+    const item = new Money({ 
+      ...req.body, 
+      user: req.user.id,
+      // Explicitly cast amount to Number to prevent "required" failures if sent as string
+      amount: req.body.amount !== undefined ? Number(req.body.amount) : undefined 
+    });
+
     await item.save();
     res.json(item);
   } catch (err) {
     console.error("Money POST error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", details: err.message });
   }
 });
 
@@ -126,15 +133,34 @@ router.patch("/:id/paid", auth, async (req, res) => {
 // ── PATCH update goal savings ─────────────────────────────────────────────────
 router.patch("/:id/savings", auth, async (req, res) => {
   try {
-    const { add } = req.body;
-    const goal = await Money.findOne({ _id: req.params.id, user: req.user.id });
-    if (!goal) return res.status(404).json({ message: "Not found" });
-    goal.saved = Math.min((goal.saved || 0) + add, goal.target);
+    let { add } = req.body; 
+
+    add = Number(add); 
+
+    if (isNaN(add) || add <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    const goal = await Money.findOne({
+      _id: req.params.id,
+      user: req.user.id
+    });
+
+    if (!goal) {
+      return res.status(404).json({ message: "Not found" });
+    }
+
+    goal.saved = Math.min(
+      (goal.saved || 0) + add,
+      goal.target || Infinity
+    );
+
     await goal.save();
     res.json(goal);
+
   } catch (err) {
     console.error("Money savings PATCH error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err.message }); 
   }
 });
 

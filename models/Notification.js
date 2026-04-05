@@ -18,7 +18,7 @@ const notificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["update", "news", "maintenance", "reminder", "alert"], // ✅ Add all types
+      enum: ["update", "news", "maintenance", "reminder", "alert", "message"],
       default: "update",
     },
     read: {

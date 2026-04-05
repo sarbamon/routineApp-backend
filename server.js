@@ -149,8 +149,7 @@ io.on("connection", (socket) => {
     if (requesterSocket) {
       io.to(requesterSocket).emit("friend_request_accepted_notify", { by: userId });
     }
-    await createNotification(
-      to,
+    await createNotification(to,
       "friend_accepted",
       "Friend Request Accepted",
       `${byUsername || socket.username} accepted your friend request`,
@@ -216,6 +215,7 @@ app.use("/api/pages",         require("./routes/pages"));
 app.use("/api/chat",          require("./routes/chat"));
 app.use("/api/friends",       require("./routes/friends"));
 app.use("/api/notifications", require("./routes/notifications"));
+app.use("/api/admin/analytics", require("./routes/adminAnalytics"));
 
 app.get("/", (req, res) => res.send("Backend Running"));
 
