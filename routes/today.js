@@ -3,6 +3,7 @@ const router  = express.Router();
 const Today   = require("../models/Today");
 const auth    = require("../middleware/authMiddleware");
 
+
 // GET TODAY DATA
 router.get("/", auth, async (req, res) => {
   try {
@@ -27,11 +28,11 @@ router.get("/", auth, async (req, res) => {
 // UPDATE TODAY DATA
 router.put("/", auth, async (req, res) => {
   try {
-    const { todos, notes } = req.body;
+    const { todos, notes, lists } = req.body;
 
     const today = await Today.findOneAndUpdate(
       { user: req.user.id },
-      { $set: { todos, notes } },
+      { $set: { todos, notes, lists } },
       { new: true, upsert: true }
     );
 

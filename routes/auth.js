@@ -35,7 +35,7 @@ router.post("/login", async (req, res) => {
 // ── CREATE ACCOUNT (admin only) ───────────────────────────────────────────────
 router.post("/create", auth, async (req, res) => {
   try {
-    // Only sarbamon can create accounts
+    // Only owner can create accounts
     if (req.user.username !== ADMIN_USERNAME) {
       return res.status(403).json({ message: "Access denied. Admin only." });
     }
@@ -101,22 +101,93 @@ router.delete("/users/:id", auth, async (req, res) => {
   }
 });
 
-// ── CHANGE PASSWORD (admin only) ──────────────────────────────────────────────
-router.patch("/users/:id/password", auth, async (req, res) => {
+// ── CHANGE OWN PASSWORD ──────────────────────────────────────────────
+router.post("/change-password", auth, async (req, res) => {
   try {
-    if (req.user.username !== ADMIN_USERNAME) {
-      return res.status(403).json({ message: "Access denied. Admin only." });
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ message: "All fields required" });
     }
 
-    const { password } = req.body;
-    if (!password?.trim()) return res.status(400).json({ message: "Password required" });
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
 
-    const hashed = await bcrypt.hash(password, 10);
-    await User.findByIdAndUpdate(req.params.id, { password: hashed });
-    res.json({ message: "Password updated" });
+    // Get current user
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Check old password
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Old password is incorrect" });
+    }
+
+    // Hash new password
+    const hashed = await bcrypt.hash(newPassword, 10);
+    user.password = hashed;
+
+    await user.save();
+
+    res.json({ message: "Password changed successfully" });
 
   } catch (err) {
-    console.error("Change password error:", err);
+    console.error("Change own password error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// ── REGISTER USER (public signup) ───────────────────────────────────────────
+router.post("/register", async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    if (!username?.trim() || !email?.trim() || !password?.trim()) {
+      return res.status(400).json({ message: "Username, email, and password are required" });
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
+
+    // Disposable/fake email validation
+    const DISPOSABLE_DOMAINS = [
+      "mailinator.com", "yopmail.com", "10minutemail.com", "tempmail.com", "guerrillamail.com",
+      "sharklasers.com", "dispostable.com", "getairmail.com", "maildrop.cc", "trashmail.com",
+      "temp-mail.org", "fakeinbox.com", "generator.email", "throwawaymail.com", "tempmailaddress.com",
+      "mailnesia.com", "mailcatch.com", "tempail.com", "tempmailo.com", "temp-mail.io", "disposable.com",
+      "fake-box.com", "mytemp.email"
+    ];
+    const emailParts = email.trim().toLowerCase().split("@");
+    const domain = emailParts[emailParts.length - 1];
+    if (DISPOSABLE_DOMAINS.includes(domain)) {
+      return res.status(400).json({ message: "Disposable or temporary email domains are not allowed" });
+    }
+
+    // Check duplicate username
+    const exists = await User.findOne({ username: username.trim() });
+    if (exists) return res.status(400).json({ message: "Username already exists" });
+
+    // Check duplicate email
+    const emailExists = await User.findOne({ email: email.trim().toLowerCase() });
+    if (emailExists) return res.status(400).json({ message: "Email already in use" });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user   = new User({ 
+      username: username.trim(), 
+      email: email.trim().toLowerCase(), 
+      password: hashed 
+    });
+    await user.save();
+
+    res.json({ message: `Account created for ${username}` });
+
+  } catch (err) {
+    console.error("Register user error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
