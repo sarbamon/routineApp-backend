@@ -1,25 +1,7 @@
 const express  = require("express");
 const router   = express.Router();
-const mongoose = require("mongoose");
 const auth     = require("../middleware/authMiddleware");
-
-// ── Schema ────────────────────────────────────────────────────────────────────
-const moneySchema = new mongoose.Schema({
-  user:     { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  type:     { type: String, enum: ["income", "expense", "loan", "goal"], required: true },
-  label:    { type: String },
-  amount:   { type: Number, required: false },
-  date:     { type: String },
-  category: { type: String },
-  person:   { type: String },
-  note:     { type: String },
-  paid:     { type: Boolean, default: false },
-  target:   { type: Number },
-  saved:    { type: Number, default: 0 },
-  color:    { type: String, default: "#8b5cf6" },
-}, { timestamps: true });
-
-const Money = mongoose.models.Money || mongoose.model("Money", moneySchema);
+const Money    = require("../models/Money");
 
 // ── GET all money data ────────────────────────────────────────────────────────
 router.get("/", auth, async (req, res) => {
@@ -30,6 +12,7 @@ router.get("/", auth, async (req, res) => {
       expenses: items.filter(i => i.type === "expense"),
       loans:    items.filter(i => i.type === "loan"),
       goals:    items.filter(i => i.type === "goal"),
+      bills:    items.filter(i => i.type === "bill"),
     });
   } catch (err) {
     console.error("Money GET error:", err);
@@ -45,11 +28,15 @@ router.get("/summary/:year/:month", auth, async (req, res) => {
 
     const items = await Money.find({ user: req.user.id });
 
-    const income   = items.filter(i => i.type === "income"  && i.date?.startsWith(monthKey));
-    const expenses = items.filter(i => i.type === "expense" && i.date?.startsWith(monthKey));
+    const income     = items.filter(i => i.type === "income"  && i.date?.startsWith(monthKey));
+    const expenses   = items.filter(i => i.type === "expense" && i.date?.startsWith(monthKey));
+    const loansTaken = items.filter(i => i.type === "loan" && i.loanType === "taken" && i.date?.startsWith(monthKey));
+    const loansGiven = items.filter(i => i.type === "loan" && (i.loanType || "given") === "given" && i.date?.startsWith(monthKey));
 
-    const totalIncome  = income.reduce((s, i)  => s + i.amount, 0);
-    const totalExpense = expenses.reduce((s, e) => s + e.amount, 0);
+    const totalIncome     = income.reduce((s, i)  => s + i.amount, 0);
+    const totalExpense    = expenses.reduce((s, e) => s + e.amount, 0);
+    const totalLoansTaken = loansTaken.reduce((s, l) => s + l.amount, 0);
+    const totalLoansGiven = loansGiven.reduce((s, l) => s + l.amount, 0);
 
     // Previous month
     const prevMonth = parseInt(month) === 1 ? 12 : parseInt(month) - 1;
@@ -72,7 +59,9 @@ router.get("/summary/:year/:month", auth, async (req, res) => {
     res.json({
       totalIncome,
       totalExpense,
-      net: totalIncome - totalExpense,
+      totalLoansTaken,
+      totalLoansGiven,
+      net: totalIncome + totalLoansTaken - totalExpense - totalLoansGiven,
       prevIncome,
       prevExpense,
       expByCategory,
@@ -104,6 +93,26 @@ router.post("/", auth, async (req, res) => {
   }
 });
 
+// ── PUT update item ───────────────────────────────────────────────────────────
+router.put("/:id", auth, async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+    if (updateData.amount !== undefined) {
+      updateData.amount = Number(updateData.amount);
+    }
+    const item = await Money.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      updateData,
+      { new: true, runValidators: true }
+    );
+    if (!item) return res.status(404).json({ message: "Item not found" });
+    res.json(item);
+  } catch (err) {
+    console.error("Money PUT error:", err);
+    res.status(500).json({ message: "Server error", details: err.message });
+  }
+});
+
 // ── DELETE item ───────────────────────────────────────────────────────────────
 router.delete("/:id", auth, async (req, res) => {
   try {
@@ -115,15 +124,14 @@ router.delete("/:id", auth, async (req, res) => {
   }
 });
 
-// ── PATCH mark loan as paid ───────────────────────────────────────────────────
+// ── PATCH mark/unmark loan as paid ───────────────────────────────────────────
 router.patch("/:id/paid", auth, async (req, res) => {
   try {
-    const item = await Money.findOneAndUpdate(
-      { _id: req.params.id, user: req.user.id },
-      { paid: true },
-      { new: true }
-    );
-    res.json(item);
+    const loan = await Money.findOne({ _id: req.params.id, user: req.user.id });
+    if (!loan) return res.status(404).json({ message: "Loan not found" });
+    loan.paid = req.body.paid !== undefined ? Boolean(req.body.paid) : !loan.paid;
+    await loan.save();
+    res.json(loan);
   } catch (err) {
     console.error("Money paid PATCH error:", err);
     res.status(500).json({ message: "Server error" });
@@ -157,10 +165,61 @@ router.patch("/:id/savings", auth, async (req, res) => {
 
     await goal.save();
     res.json(goal);
-
   } catch (err) {
     console.error("Money savings PATCH error:", err);
-    res.status(500).json({ message: err.message }); 
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── PATCH mark bill as paid for a month ───────────────────────────────────────
+router.patch("/:id/pay-bill", auth, async (req, res) => {
+  try {
+    const { monthKey, date } = req.body;
+    const bill = await Money.findOne({ _id: req.params.id, user: req.user.id });
+    if (!bill) return res.status(404).json({ message: "Bill not found" });
+
+    if (!bill.paidMonths) bill.paidMonths = [];
+    if (!bill.paidMonths.includes(monthKey)) {
+      bill.paidMonths.push(monthKey);
+      if (bill.totalTenure && bill.paidMonths.length >= bill.totalTenure) {
+        bill.status = "completed";
+      }
+      await bill.save();
+
+      // Automatically add expense entry for this paid bill
+      const expDate = date || `${monthKey}-${String(bill.dueDate || "05").padStart(2, "0")}`;
+      const expense = new Money({
+        user: req.user.id,
+        type: "expense",
+        label: `Bill Paid: ${bill.label || "Monthly Bill"}`,
+        amount: bill.amount,
+        date: expDate,
+        category: bill.category || "Bills",
+      });
+      await expense.save();
+    }
+    res.json(bill);
+  } catch (err) {
+    console.error("Pay bill error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── PATCH unmark bill as paid for a month ─────────────────────────────────────
+router.patch("/:id/unpay-bill", auth, async (req, res) => {
+  try {
+    const { monthKey } = req.body;
+    const bill = await Money.findOne({ _id: req.params.id, user: req.user.id });
+    if (!bill) return res.status(404).json({ message: "Bill not found" });
+
+    if (bill.paidMonths) {
+      bill.paidMonths = bill.paidMonths.filter(m => m !== monthKey);
+      await bill.save();
+    }
+    res.json(bill);
+  } catch (err) {
+    console.error("Unpay bill error:", err);
+    res.status(500).json({ message: err.message });
   }
 });
 

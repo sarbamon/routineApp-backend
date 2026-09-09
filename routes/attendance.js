@@ -11,12 +11,20 @@ const attendanceSchema = new mongoose.Schema({
   subject:     { type: String, required: true },
   hours:       { type: Number, default: 1 },
   leaveReason: { type: String, default: "" },
+  semester:    { type: String, default: "Semester 1" },
 }, { timestamps: true });
 
 // ── Subject Schema ────────────────────────────────────────────────────────────
 const subjectSchema = new mongoose.Schema({
-  user:    { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  name:    { type: String, required: true },
+  user:     { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  name:     { type: String, required: true },
+  semester: { type: String, default: "Semester 1" },
+}, { timestamps: true });
+
+// ── Semester Schema ───────────────────────────────────────────────────────────
+const semesterSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  name: { type: String, required: true },
 }, { timestamps: true });
 
 const Attendance = mongoose.models.Attendance
@@ -25,12 +33,71 @@ const Attendance = mongoose.models.Attendance
 const Subject = mongoose.models.Subject
   || mongoose.model("Subject", subjectSchema);
 
+const Semester = mongoose.models.Semester
+  || mongoose.model("Semester", semesterSchema);
+
+// Helper for querying documents by semester with fallback for legacy records
+function buildSemQuery(userId, sem) {
+  const query = { user: userId };
+  if (sem) {
+    if (sem === "Semester 1") {
+      // Legacy records without semester field belong to Semester 1
+      query.$or = [
+        { semester: "Semester 1" },
+        { semester: { $exists: false } },
+        { semester: null },
+      ];
+    } else {
+      query.semester = sem;
+    }
+  }
+  return query;
+}
+
+// ══ SEMESTER ROUTE ════════════════════════════════════════════════════════════
+
+// GET distinct semesters for user
+router.get("/semesters", auth, async (req, res) => {
+  try {
+    const customSems = await Semester.distinct("name", { user: req.user.id });
+    const subjSems   = await Subject.distinct("semester", { user: req.user.id });
+    const attSems    = await Attendance.distinct("semester", { user: req.user.id });
+    const semsSet    = new Set(["Semester 1", ...customSems.filter(Boolean), ...subjSems.filter(Boolean), ...attSems.filter(Boolean)]);
+    const semesters  = Array.from(semsSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    res.json(semesters);
+  } catch (err) {
+    console.error("Semesters GET error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// POST add custom semester
+router.post("/semesters", auth, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name?.trim()) return res.status(400).json({ message: "Semester name required" });
+    const semName = name.trim();
+
+    const exists = await Semester.findOne({ user: req.user.id, name: semName });
+    if (!exists) {
+      const sem = new Semester({ user: req.user.id, name: semName });
+      await sem.save();
+    }
+    res.json({ name: semName });
+  } catch (err) {
+    console.error("Semester POST error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // ══ SUBJECT ROUTES ════════════════════════════════════════════════════════════
 
-// GET all subjects for user
+// GET all subjects for user (filtered by semester)
 router.get("/subjects", auth, async (req, res) => {
   try {
-    const subjects = await Subject.find({ user: req.user.id }).sort({ createdAt: 1 });
+    const sem = req.query.semester || "Semester 1";
+    const query = buildSemQuery(req.user.id, sem);
+    const subjects = await Subject.find(query).sort({ createdAt: 1 });
     res.json(subjects);
   } catch (err) {
     console.error("Subject GET error:", err);
@@ -41,14 +108,15 @@ router.get("/subjects", auth, async (req, res) => {
 // POST add subject
 router.post("/subjects", auth, async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, semester } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Subject name required" });
+    const sem = semester?.trim() || "Semester 1";
 
-    // Prevent duplicates per user
-    const exists = await Subject.findOne({ user: req.user.id, name: name.trim() });
-    if (exists) return res.status(400).json({ message: "Subject already exists" });
+    // Prevent duplicates per user within the same semester
+    const exists = await Subject.findOne({ user: req.user.id, name: name.trim(), semester: sem });
+    if (exists) return res.status(400).json({ message: "Subject already exists in this semester" });
 
-    const subject = new Subject({ user: req.user.id, name: name.trim() });
+    const subject = new Subject({ user: req.user.id, name: name.trim(), semester: sem });
     await subject.save();
     res.json(subject);
   } catch (err) {
@@ -70,10 +138,12 @@ router.delete("/subjects/:id", auth, async (req, res) => {
 
 // ══ ATTENDANCE ROUTES ═════════════════════════════════════════════════════════
 
-// GET all records for user
+// GET all records for user (filtered by semester)
 router.get("/", auth, async (req, res) => {
   try {
-    const records = await Attendance.find({ user: req.user.id }).sort({ date: -1 });
+    const sem = req.query.semester || "Semester 1";
+    const query = buildSemQuery(req.user.id, sem);
+    const records = await Attendance.find(query).sort({ date: -1 });
     res.json(records);
   } catch (err) {
     console.error("Attendance GET error:", err);
@@ -86,11 +156,12 @@ router.get("/summary/:year/:month", auth, async (req, res) => {
   try {
     const { year, month } = req.params;
     const monthKey = `${year}-${month.padStart(2, "0")}`;
+    const sem = req.query.semester || "Semester 1";
 
-    const records = await Attendance.find({
-      user: req.user.id,
-      date: { $regex: `^${monthKey}` },
-    });
+    const query = buildSemQuery(req.user.id, sem);
+    query.date = { $regex: `^${monthKey}` };
+
+    const records = await Attendance.find(query);
 
     const total   = records.length;
     const present = records.filter(r => r.status === "present").length;
@@ -119,7 +190,8 @@ router.get("/summary/:year/:month", auth, async (req, res) => {
 // POST add record
 router.post("/", auth, async (req, res) => {
   try {
-    const record = new Attendance({ ...req.body, user: req.user.id });
+    const sem = req.body.semester || "Semester 1";
+    const record = new Attendance({ ...req.body, semester: sem, user: req.user.id });
     await record.save();
     res.json(record);
   } catch (err) {
