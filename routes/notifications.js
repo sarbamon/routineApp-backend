@@ -199,8 +199,8 @@ router.delete("/:id", auth, async (req, res) => {
   }
 });
 
-// DELETE all
-router.delete("/all", auth, async (req, res) => {
+// DELETE all (handles both / and /all)
+const deleteAllHandler = async (req, res) => {
   try {
     const result = await Notification.deleteMany({ user: req.user.id });
     res.json({ 
@@ -211,7 +211,10 @@ router.delete("/all", auth, async (req, res) => {
     console.error("Delete all error:", err);
     res.status(500).json({ message: "Server error" });
   }
-});
+};
+
+router.delete("/", auth, deleteAllHandler);
+router.delete("/all", auth, deleteAllHandler);
 
 // POST /api/notifications/broadcast (admin only)
 router.post("/broadcast", auth, async (req, res) => {
@@ -248,12 +251,24 @@ router.post("/broadcast", auth, async (req, res) => {
     const docs = users.map(u => ({
       user: u._id,
       title,
+      body: message,
       message,
-      type: type || "update",
+      type: type || "announcement",
       read: false,
     }));
 
-    await Notification.insertMany(docs);
+    const inserted = await Notification.insertMany(docs);
+
+    // Emit via Socket.io to online users
+    if (req.io && req.onlineUsers) {
+      inserted.forEach(notif => {
+        const uId = notif.user.toString();
+        const socketId = req.onlineUsers[uId];
+        if (socketId) {
+          req.io.to(socketId).emit("new_notification", notif);
+        }
+      });
+    }
 
     console.log(`✅ Broadcast sent to ${docs.length} users`);
 

@@ -9,6 +9,7 @@ const cron       = require("node-cron");
 
 const FriendRequest = require("./models/FriendRequest");
 const Notification  = require("./models/Notification");
+const Routine       = require("./models/Routine");
 const Today         = require("./models/Today");
 const User          = require("./models/User");
 
@@ -25,7 +26,14 @@ const onlineUsers = {};
 // ── Helper: create notification + emit to user if online ─────────────────────
 const createNotification = async (userId, type, title, body, data = {}) => {
   try {
-    const notif = await Notification.create({ user: userId, type, title, body, data });
+    const notif = await Notification.create({
+      user: userId,
+      type,
+      title,
+      body,
+      message: body || title,
+      data,
+    });
     const recipientSocket = onlineUsers[userId];
     if (recipientSocket) {
       io.to(recipientSocket).emit("new_notification", notif);
@@ -76,7 +84,8 @@ io.on("connection", (socket) => {
     if (requesterSocket) {
       io.to(requesterSocket).emit("friend_request_accepted_notify", { by: userId });
     }
-    await createNotification(to,
+    await createNotification(
+      to,
       "friend_accepted",
       "Friend Request Accepted",
       `${byUsername || socket.username} accepted your friend request`,
@@ -128,8 +137,101 @@ cron.schedule("0 20 * * *", async () => {
   }
 });
 
+// ── Helper: Parse time string into minutes from midnight (0 to 1439) ─────────
+const parseTimeToMinutes = (timeStr) => {
+  if (!timeStr || typeof timeStr !== "string") return null;
+  const trimmed = timeStr.trim().toUpperCase();
+
+  // 12-hour format: "7:30 AM", "07:30 PM", "7:30AM"
+  const match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+  if (match12) {
+    let h = parseInt(match12[1], 10);
+    const m = parseInt(match12[2], 10);
+    const ampm = match12[3];
+    if (h < 1 || h > 12 || m < 0 || m > 59) return null;
+    if (ampm === "AM" && h === 12) h = 0;
+    if (ampm === "PM" && h < 12) h += 12;
+    return h * 60 + m;
+  }
+
+  // 24-hour format: "14:30", "07:30", "7:30"
+  const match24 = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (match24) {
+    const h = parseInt(match24[1], 10);
+    const m = parseInt(match24[2], 10);
+    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+    return h * 60 + m;
+  }
+
+  return null;
+};
+
+// ── Routine schedule notification cron job (runs every minute) ───────────────
+const lastNotifiedRoutines = new Set();
+
+cron.schedule("* * * * *", async () => {
+  try {
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const target10Min = (nowMinutes + 10) % 1440; // 10 minutes in the future
+
+    const minuteKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours().toString().padStart(2, "0")}-${now.getMinutes().toString().padStart(2, "0")}`;
+
+    if (lastNotifiedRoutines.size > 2000) {
+      lastNotifiedRoutines.clear();
+    }
+
+    const routines = await Routine.find({ time: { $exists: true, $ne: "" } });
+
+    for (const routine of routines) {
+      if (!routine.user || !routine.time) continue;
+      const routineMins = parseTimeToMinutes(routine.time);
+      if (routineMins === null) continue;
+
+      // Check 1: 10 minutes before routine time
+      if (routineMins === target10Min) {
+        const dedupeKey10m = `${routine._id}_10m_${minuteKey}`;
+        if (!lastNotifiedRoutines.has(dedupeKey10m)) {
+          lastNotifiedRoutines.add(dedupeKey10m);
+          await createNotification(
+            routine.user.toString(),
+            "routine_reminder",
+            `⏰ Upcoming Routine (in 10 mins): ${routine.activity}`,
+            `Starts at ${routine.time}! Prepare for ${routine.activity}${routine.duration ? ` (${routine.duration})` : ""}${routine.notes ? ` - ${routine.notes}` : ""}`,
+            { routineId: routine._id, time: routine.time, section: routine.section, reminderType: "10min" }
+          );
+        }
+      }
+
+      // Check 2: Exact routine time
+      if (routineMins === nowMinutes) {
+        const dedupeKey0m = `${routine._id}_0m_${minuteKey}`;
+        if (!lastNotifiedRoutines.has(dedupeKey0m)) {
+          lastNotifiedRoutines.add(dedupeKey0m);
+          await createNotification(
+            routine.user.toString(),
+            "routine_reminder",
+            `⏰ Routine Time: ${routine.activity}`,
+            `It's ${routine.time}! Time for ${routine.activity}${routine.duration ? ` (${routine.duration})` : ""}${routine.notes ? ` - ${routine.notes}` : ""}`,
+            { routineId: routine._id, time: routine.time, section: routine.section, reminderType: "exact" }
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Routine reminder cron error:", err);
+  }
+});
+
 app.use(cors());
 app.use(express.json());
+
+// Pass io & onlineUsers to routes
+app.use((req, res, next) => {
+  req.io = io;
+  req.onlineUsers = onlineUsers;
+  next();
+});
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use("/api/auth",          require("./routes/auth"));

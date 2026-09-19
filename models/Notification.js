@@ -12,14 +12,21 @@ const notificationSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    body: {
+      type: String,
+      default: "",
+    },
     message: {
       type: String,
-      required: true,
+      default: "",
     },
     type: {
       type: String,
-      enum: ["update", "news", "maintenance", "reminder", "alert", "message"],
       default: "update",
+    },
+    data: {
+      type: Object,
+      default: {},
     },
     read: {
       type: Boolean,
