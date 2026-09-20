@@ -181,6 +181,7 @@ cron.schedule("* * * * *", async () => {
       lastNotifiedRoutines.clear();
     }
 
+    // ── 1. Routine Reminders ───────────────────────────────────────────────────
     const routines = await Routine.find({ time: { $exists: true, $ne: "" } });
 
     for (const routine of routines) {
@@ -218,8 +219,55 @@ cron.schedule("* * * * *", async () => {
         }
       }
     }
+
+    // ── 2. Today Task Reminders ───────────────────────────────────────────────
+    const todayDocs = await Today.find({ todos: { $exists: true, $ne: [] } });
+    const todayDateKey = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, "0")}-${now.getDate().toString().padStart(2, "0")}`;
+
+    for (const doc of todayDocs) {
+      if (!doc.user || !Array.isArray(doc.todos)) continue;
+
+      for (const todo of doc.todos) {
+        if (!todo || typeof todo !== "object" || todo.completed) continue;
+        if (todo.date && todo.date !== todayDateKey && todo.date !== "____global____") continue;
+        if (!todo.time) continue;
+
+        const todoMins = parseTimeToMinutes(todo.time);
+        if (todoMins === null) continue;
+
+        // 10 mins before task
+        if (todoMins === target10Min) {
+          const dedupeKey10m = `todo_${doc.user}_${todo.id}_10m_${minuteKey}`;
+          if (!lastNotifiedRoutines.has(dedupeKey10m)) {
+            lastNotifiedRoutines.add(dedupeKey10m);
+            await createNotification(
+              doc.user.toString(),
+              "todo_reminder",
+              `⏰ Upcoming Task (in 10 mins): ${todo.text}`,
+              `Task "${todo.text}" is scheduled for ${todo.time}!`,
+              { todoId: todo.id, time: todo.time, date: todo.date }
+            );
+          }
+        }
+
+        // Exact task time
+        if (todoMins === nowMinutes) {
+          const dedupeKey0m = `todo_${doc.user}_${todo.id}_0m_${minuteKey}`;
+          if (!lastNotifiedRoutines.has(dedupeKey0m)) {
+            lastNotifiedRoutines.add(dedupeKey0m);
+            await createNotification(
+              doc.user.toString(),
+              "todo_reminder",
+              `⏰ Task Reminder: ${todo.text}`,
+              `It's ${todo.time}! Time to complete "${todo.text}"!`,
+              { todoId: todo.id, time: todo.time, date: todo.date }
+            );
+          }
+        }
+      }
+    }
   } catch (err) {
-    console.error("Routine reminder cron error:", err);
+    console.error("Reminder cron error:", err);
   }
 });
 
