@@ -116,7 +116,7 @@ router.post("/share", auth, async (req, res) => {
     if (req.io && req.onlineUsers) {
       const socketId = req.onlineUsers[recipientUserId];
       if (socketId) {
-        req.io.to(socketId).emit("new_notification", notif);
+        req.io.to(socketId).emit("new_notification", notif.toObject ? notif.toObject() : notif);
       }
     }
 
@@ -136,7 +136,7 @@ router.post("/import", auth, async (req, res) => {
       return res.status(400).json({ message: "No routines provided to import" });
     }
 
-    const destSection = targetSection || section || "Imported";
+    const destSection = (targetSection && targetSection.trim()) || section || "Imported";
 
     const docsToInsert = routines.map(r => ({
       user: req.user.id,
@@ -148,7 +148,7 @@ router.post("/import", auth, async (req, res) => {
     }));
 
     const created = await Routine.insertMany(docsToInsert);
-    res.json({ success: true, count: created.length, routines: created });
+    res.json({ success: true, count: created.length, section: destSection, routines: created });
   } catch (err) {
     console.error("Import routine error:", err);
     res.status(500).json({ message: "Server error" });
