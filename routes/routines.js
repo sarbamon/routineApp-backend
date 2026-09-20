@@ -80,7 +80,8 @@ router.get("/", auth, async (req, res) => {
       ],
     })
     .populate("user", "username")
-    .populate("sharedWith", "username");
+    .populate("sharedWith", "username")
+    .lean();
 
     const formatted = routines.map(r => {
       const isOwner = r.user?._id?.toString() === req.user.id;

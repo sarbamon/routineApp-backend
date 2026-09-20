@@ -1,11 +1,12 @@
 require("dotenv").config();
-const express    = require("express");
-const mongoose   = require("mongoose");
-const cors       = require("cors");
-const http       = require("http");
-const { Server } = require("socket.io");
-const jwt        = require("jsonwebtoken");
-const cron       = require("node-cron");
+const express     = require("express");
+const mongoose    = require("mongoose");
+const cors        = require("cors");
+const compression = require("compression");
+const http        = require("http");
+const { Server }  = require("socket.io");
+const jwt         = require("jsonwebtoken");
+const cron        = require("node-cron");
 
 const FriendRequest = require("./models/FriendRequest");
 const Notification  = require("./models/Notification");
@@ -15,6 +16,12 @@ const User          = require("./models/User");
 
 const app    = express();
 const server = http.createServer(app);
+
+// ── Body Parsers & Middlewares (50mb limit for Cloudinary image uploads) ────────
+app.use(cors());
+app.use(compression());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const io = new Server(server, {
@@ -98,9 +105,9 @@ io.on("connection", (socket) => {
     delete onlineUsers[userId];
     io.emit("online_users", Object.keys(onlineUsers));
   });
+});
 
-}); // end of io.on("connection")
-
+// ── Cron Jobs ─────────────────────────────────────────────────────────────────
 cron.schedule("0 20 * * *", async () => {
   try {
     console.log("⏰ Running todo reminder job...");
@@ -113,11 +120,11 @@ cron.schedule("0 20 * * *", async () => {
           date:      todayDate,
         },
       },
-    });
+    }).lean();
 
     for (const doc of todayDocs) {
       const pendingCount = doc.todos.filter(
-        t => !t.completed && t.date === todayDate
+        (t) => !t.completed && t.date === todayDate
       ).length;
 
       if (pendingCount > 0) {
@@ -166,14 +173,14 @@ const parseTimeToMinutes = (timeStr) => {
   return null;
 };
 
-// ── Routine schedule notification cron job (runs every minute) ───────────────
+// ── Routine & Task schedule notification cron job (runs every minute) ────────
 const lastNotifiedRoutines = new Set();
 
 cron.schedule("* * * * *", async () => {
   try {
     const now = new Date();
     const nowMinutes = now.getHours() * 60 + now.getMinutes();
-    const target10Min = (nowMinutes + 10) % 1440; // 10 minutes in the future
+    const target10Min = (nowMinutes + 10) % 1440;
 
     const minuteKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours().toString().padStart(2, "0")}-${now.getMinutes().toString().padStart(2, "0")}`;
 
@@ -181,15 +188,14 @@ cron.schedule("* * * * *", async () => {
       lastNotifiedRoutines.clear();
     }
 
-    // ── 1. Routine Reminders ───────────────────────────────────────────────────
-    const routines = await Routine.find({ time: { $exists: true, $ne: "" } });
+    // Routine Reminders
+    const routines = await Routine.find({ time: { $exists: true, $ne: "" } }).lean();
 
     for (const routine of routines) {
       if (!routine.user || !routine.time) continue;
       const routineMins = parseTimeToMinutes(routine.time);
       if (routineMins === null) continue;
 
-      // Check 1: 10 minutes before routine time
       if (routineMins === target10Min) {
         const dedupeKey10m = `${routine._id}_10m_${minuteKey}`;
         if (!lastNotifiedRoutines.has(dedupeKey10m)) {
@@ -204,7 +210,6 @@ cron.schedule("* * * * *", async () => {
         }
       }
 
-      // Check 2: Exact routine time
       if (routineMins === nowMinutes) {
         const dedupeKey0m = `${routine._id}_0m_${minuteKey}`;
         if (!lastNotifiedRoutines.has(dedupeKey0m)) {
@@ -220,8 +225,8 @@ cron.schedule("* * * * *", async () => {
       }
     }
 
-    // ── 2. Today Task Reminders ───────────────────────────────────────────────
-    const todayDocs = await Today.find({ todos: { $exists: true, $ne: [] } });
+    // Today Task Reminders
+    const todayDocs = await Today.find({ todos: { $exists: true, $ne: [] } }).lean();
     const todayDateKey = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, "0")}-${now.getDate().toString().padStart(2, "0")}`;
 
     for (const doc of todayDocs) {
@@ -235,7 +240,6 @@ cron.schedule("* * * * *", async () => {
         const todoMins = parseTimeToMinutes(todo.time);
         if (todoMins === null) continue;
 
-        // 10 mins before task
         if (todoMins === target10Min) {
           const dedupeKey10m = `todo_${doc.user}_${todo.id}_10m_${minuteKey}`;
           if (!lastNotifiedRoutines.has(dedupeKey10m)) {
@@ -250,7 +254,6 @@ cron.schedule("* * * * *", async () => {
           }
         }
 
-        // Exact task time
         if (todoMins === nowMinutes) {
           const dedupeKey0m = `todo_${doc.user}_${todo.id}_0m_${minuteKey}`;
           if (!lastNotifiedRoutines.has(dedupeKey0m)) {
@@ -271,9 +274,6 @@ cron.schedule("* * * * *", async () => {
   }
 });
 
-app.use(cors());
-app.use(express.json());
-
 // Pass io & onlineUsers to routes
 app.use((req, res, next) => {
   req.io = io;
@@ -282,22 +282,23 @@ app.use((req, res, next) => {
 });
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use("/api/auth",          require("./routes/auth"));
-app.use("/api/routines",      require("./routes/routines"));
-app.use("/api/today",         require("./routes/today"));
-app.use("/api/money",         require("./routes/money"));
-app.use("/api/attendance",    require("./routes/attendance"));
-app.use("/api/pages",         require("./routes/pages"));
-app.use("/api/friends",       require("./routes/friends"));
-app.use("/api/contact",       require("./routes/contact"));
-app.use("/api/notifications", require("./routes/notifications"));
+app.use("/api/auth",            require("./routes/auth"));
+app.use("/api/routines",        require("./routes/routines"));
+app.use("/api/today",           require("./routes/today"));
+app.use("/api/money",           require("./routes/money"));
+app.use("/api/attendance",      require("./routes/attendance"));
+app.use("/api/pages",           require("./routes/pages"));
+app.use("/api/friends",         require("./routes/friends"));
+app.use("/api/contact",         require("./routes/contact"));
+app.use("/api/notifications",   require("./routes/notifications"));
+app.use("/api/health",          require("./routes/health"));
 app.use("/api/admin/analytics", require("./routes/adminAnalytics"));
 
 app.get("/", (req, res) => res.send("Backend Running"));
 
 // ── MongoDB ───────────────────────────────────────────────────────────────────
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
+mongoose.connect(process.env.MONGO_URI, { maxPoolSize: 10, minPoolSize: 2 })
+  .then(() => console.log("✅ MongoDB Connected with Connection Pooling"))
   .catch(err => console.error("❌ MongoDB Error:", err));
 
 const PORT = process.env.PORT || 5000;

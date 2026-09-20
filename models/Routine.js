@@ -30,4 +30,7 @@ const routineSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
+routineSchema.index({ user: 1, section: 1 });
+routineSchema.index({ sharedWith: 1 });
+
 module.exports = mongoose.model("Routine", routineSchema);

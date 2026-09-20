@@ -33,7 +33,8 @@ router.get("/", auth, async (req, res) => {
   try {
     let ownToday = await Today.findOne({ user: req.user.id })
       .populate("user", "username")
-      .populate("sharedWith", "username");
+      .populate("sharedWith", "username")
+      .lean();
 
     if (!ownToday) {
       ownToday = await Today.create({
@@ -45,13 +46,15 @@ router.get("/", auth, async (req, res) => {
       });
       ownToday = await Today.findById(ownToday._id)
         .populate("user", "username")
-        .populate("sharedWith", "username");
+        .populate("sharedWith", "username")
+        .lean();
     }
 
     // Find any Today documents shared with this user
     const sharedDocs = await Today.find({ sharedWith: req.user.id })
       .populate("user", "username")
-      .populate("sharedWith", "username");
+      .populate("sharedWith", "username")
+      .lean();
 
     let mergedTodos = Array.isArray(ownToday.todos) ? [...ownToday.todos] : [];
     let mergedLists = Array.isArray(ownToday.lists) ? [...ownToday.lists] : [];
